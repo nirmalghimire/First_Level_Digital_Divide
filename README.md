@@ -1,2 +1,2 @@
-# First_Level_Digital_Divide
-Raw analysis files and scripts for the study on first‑level digital divide indicators and reading achievement among U.S. 15‑year‑olds using PISA 2018 data.
+# Overview
+TThis repository contains all data files and R code used to examine the first‑level digital divide—specifically, basic computer and internet access—and its relationship to reading achievement among U.S. 15‑year‑olds using PISA 2018 data. The research investigates how differences in home ICT availability (e.g., number of devices, internet connectivity) correlate with student reading scores, accounting for demographic and socioeconomic factors through survey‑weighted regression models and plausible‑values methodology.
