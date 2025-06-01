@@ -1,0 +1,463 @@
+---
+title: "ICT as a Predictor of Reading Scores_Factor"
+author: "Nirmal Ghimire, K-16 Literacy Center"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      comment = NA,
+                      warning = FALSE,
+                      message = FALSE,
+                      tidy = 'styler',
+                      error = FALSE, 
+                      highlight = TRUE, 
+                      prompt = FALSE)
+```
+
+
+```{r loading_libraries}
+library(tidyverse)
+library(ggplot2)
+library(janitor)
+library(stringr)
+library(readr)
+library(jtools)
+library(lavaan)
+library(tidySEM)
+library(lavaanPlot)
+library(GGally)
+```
+
+
+```{r loading_data}
+ICT_data <- read.csv("ict1_data.csv")
+#summary(ICT_data)
+```
+
+
+```{r changing_class_getting_X_out}
+# Indexing the columns that need to be changed
+    cols_to_change <- c("COM_HOM","INTERNET")
+# Passing the selected column through the `modify_at` function from `purrr` package.
+ICT_data <- ICT_data|>
+      purrr::modify_at(cols_to_change, factor)
+
+# Getting rid of x variable
+ICT_data <- ICT_data[,-(1:3)]
+# Checking for the Summary
+summary(ICT_data)
+# Dimension 
+dim(ICT_data)
+```
+
+
+### Missing Values
+Based on the above summary, we have some missing values in our data set. We have to make decisions based on whether or not they are missing in a patter or anything. First of all I want to see how many of the missing values in `COM_HOM [64 missing; ~1.3%]`, `INTERNET [256 missing; ~5.3%]`, and `ICTHOME [192 missing; ~4%]` are missing in the same rows. 
+```{r missing_rows_study}
+na_variables = c("COM_HOM", "INTERNET", "ICTHOME")
+
+only_na_int <- ICT_data|>
+  filter(is.na(INTERNET))
+summary(only_na_int)
+
+only_na_com <- ICT_data|>
+  filter(is.na(COM_HOM))
+summary(only_na_com)
+
+only_na_icth <- ICT_data|>
+  filter(is.na(ICTHOME))
+summary(only_na_icth)
+
+# Total Missing
+sum(is.na(ICT_data))
+```
+
+There are at least 41 cases where all three variables have *NAs*, and 192 cases where `ICTHOME` and  `INTERNET` share *NAs*. 
+
+Beaujean (2014) mentions that "missing data pattern is the configuration of observed and missing values in a dataset. Data are missing completely at random (MCAR) when the missing values on a given variable are unrelated to both that variable and any other variable in the dataset. Data are missing at random (MAR) if a given variable's missingness is unrelated to the variable itself, but is related to other variables in the dataset. In addition, data are not missing at random (NMAR) if the missing values are not MCAR or MAR. Values that are NMAR are a problem because they yield biased parameter estimates with traditional techniques and could yield biased results with modern techniques could yield biased results with modern techniques as well"(p. 114-117). 
+
+The book further writes, "if there are missing responses in a dataset, the best method to deal with them is a function of: (a) **the type of missing data**; (b) **how much data are missing**; and (c) **the variables that have missing values**. 
+
+- if the data are MCAR and only make up a small percentage (i.e., <3 - 5%) of the entire dataset, and the sample size is relatively large (*n* > 200), then list wise deletion will likely not have a noticeable influence on the parameter estimates; 
+- Missing data on an endogenous variable pose different problems from missing data on an exogenous variable. When the data are MAR, then observations with missing values on the endogenous variable, but have values for all the exogenous variables, do not contribute any information to the outcome-predictor relationship. The information they provide is still useful, but they do not make a contribution to the path coefficient. 
+
+Dealing with missing data:
+Historically, missing data were addressed indirectly by one of the two methods, e.g., Traditional Methods, and Modern Methods. 
+
+**Traditional Methods**: 
+
+Historically, missing data were addressed indirectly by one of the two methods. First, observations with missing data were deleted either listwise or pairwise.
+
+a. *Listwise Deletion*: with listwise deletion, observations with any missing values on variables used in a model are deleted before estimating any parameters. It provides unbiased parameter estimates only if data are MCAR. However, the price for removing entire observations is that the estimates' standard errors increase and statistical power decreases.
+b. *Pairwise Deletion*: With pairwise deletion, the maximum amount of bivariate data available is retained for a single parameter estimate. This method is usually used to estimate means and covariances, with are then used for other analyses (e.g., regression, latent variable model).  
+c. *Imputation*: Imputation replaces a missing value wit another plausible value, typically based on one of three strategies,
+
+    i. the mean/median of all present values of the variable;
+    ii. regression-based predictor scores; or 
+    iii. use a pattern-matching technique to find another observation that has similar responses across all the other variables in the dataset, and then replace the missing value with the matched observation's value (e.g., cold-deck imputation). Mean imputation is never a good idea with any type of missing data. Regression and deck methods both sound reasonable, but because they only impute asingle value for each missing response, they tend to produce understimated variability and standard error estimates. 
+
+**Modern Methods**:
+
+a. *Full Information Maximum Likelihood*: ML estimation involves an iterative procedure to find parameter values that are the most likely for a model, given the variables' observed values. To use a ML estimator, there has to be an a priori assumption about the distribution of the variable, which is usually that they follow a multivariate normal distribution. 
+b. *Multiple Imputation*: Multiple imputation creates a multiple da1617
+16tasets, each of which contain different plausible estimates of the missing values. It involves a three-step process. The first step is to create the *m* datasets with imputed data. It is the most complex step and differs by the computer program and the types of the data, e.g., categorical, continuous, etc. The second step in MI is the analysis of different datasets, which involves estimating the model parameters in all of th em complete datasets, separately. The third step in MI is to pool the parameter estimates form the m datasets to calculate the final parameter estimates and their standard errors. The parameter estimates are simply the average of the m parameter estimates. 
+c. *Auxiliary Variables*: An auxiliary variable is a varible that is not of interest in answering a research question, but is included in the model because it is either potential cause or correlate of missingness in the variables of interest. The AVs can be used with both FIML and MI, but for them to work well they should be storngly correlated (r >= 0.50) with the manifest varibles of interest and with each other. 
+
+
+
+Before we take any action regarding deleting or imputing the missing data, I would like to check if the data are missing completely at random (MCAR)using multivariate test of MCAR proposed by Little (1988). 
+
+```{r MCAR_test, out.width='100%'}
+misty::na.test(ICT_data)
+
+# Multivariate imputation by chained equation (MICE) missing pattern analysis
+library(mice)
+md.pattern(ICT_data)
+entire_data <- ICT_data
+```
+
+A missing value analysis indicated that Little's (1988) test of Missing Completely at Random (MCAR) was statistically significant, χ^2^ = 662.75, *DF* = 26, p > .05. When significant, Little's test suggests that the hypothesis the data are MCAR can be rejected. Whether a student has a computer at home is a key variable in the study. There are less than 1.5% of missing cases in this variable. It is not necessary for us to impute the missing data in this variable. Thus, we are going to get rid of missing data list wise.
+
+```{r listwise_deletion}
+
+```
+
+
+```{r pairwise_correlation, out.width='100%'}
+score_ict_corr <- ggpairs(ICT_data[ , -(1:3)], lower = list(continuous = wrap("smooth", method = "lm")))
+score_ict_corr
+
+## Pairwise Correlation Statistics only
+    pair_cor <- cor(ICT_data[,-(1:3)], method = "pearson", use = "complete.obs")
+    pair_cor
+
+## Variable Description
+datawizard::describe_distribution(ICT_data[,-(1:3)])
+```
+
+The variable `internet` has the Skeweness and Kurtosis values higher than the bearable limits. Thus, it's good to visualize the distribution and check. As this is a factor variable, the diagram shows that most of the 15-year-olds had access to internet at home compared to the and fairly small number of students noted to not have internet service at home, and not use it even when available at home. 
+```{r checking_internet}
+#hist(ICT_data$INTERNET)
+library(nlme)
+null_m <- gls(READ_SCR ~ 1, data = ICT_data, method = "ML")
+summary(null_m)
+```
+
+```{r com_hom_read_scr}
+fit1 <- lm(READ_SCR  ~ COM_HOM, data = ICT_data)
+summ(fit1)
+#summ(fit1, robust = "HC1")
+#summ(fit1, center = TRUE)
+```
+
+### Model Fit 2
+```{r ict_com_hom_internet}
+fit2 <- lm(READ_SCR ~ COM_HOM + INTERNET + COM_HOM*INTERNET, data = ICT_data)
+summ(fit2)
+#summ(fit2, center = TRUE)
+car::Anova(fit2, type = "III")
+TukeyHSD(aov(fit2), ordered = TRUE)
+```
+
+### Model Fit 3
+```{r ict_com_hom_internet_icthome}
+fit3 <- lm(READ_SCR ~ COM_HOM + INTERNET + ICTHOME + COM_HOM*INTERNET*ICTHOME, data = ICT_data)
+#summ(fit3, robust = "HC1")
+#summ(fit3, center = TRUE)
+#summ(fit3)
+car::Anova(fit3, type = "III")
+#TukeyHSD(aov(fit3), ordered = TRUE)
+
+```
+
+### Model Fit 4
+```{r no_interaction_model}
+fit4 <- lm(READ_SCR ~ COM_HOM + INTERNET + ICTHOME + COM_HOM*INTERNET, data = ICT_data)
+#summ(fit4)
+car::Anova(fit4, type = "III")
+#TukeyHSD(aov(fit4), ordered = TRUE)
+```
+
+
+```{r effect_plot}
+#effect_plot(fit3, pred = ICTHOME, interval = TRUE, plot.points = TRUE, jitter = 0.05)
+#effect_plot(fit2, pred = INTERNET, interval = TRUE, plot.points = TRUE, jitter = 0.05)
+#effect_plot(fit1, pred = COM_HOM, interval = TRUE, plot.points = TRUE, jitter = 0.05)
+#plot_summs(fit3)
+plot_summs(fit4, plot.distributions = TRUE, inner_ci_levels = .95)
+#plot_summs(fit1, fit2, fit3)
+export_summs(null_m, fit1, fit2, fit3, scale = FALSE,
+             error_format = "[{conf.low}, {conf.high}]")
+```
+
+### Effect Size (cohen's d) for Fit Model 3
+```{r effect_size}
+effectsize::omega_squared(fit2, alternative = "greater", verbose = TRUE, partial = TRUE, ci=0.95)
+effectsize::omega_squared(fit3, alternative = "greater", verbose = TRUE, partial = TRUE, ci=0.95)
+effectsize::cohens_f(fit3, alternative = "greater", verbose = TRUE, partial = TRUE, ci=0.95)
+```
+
+**Cohen's-*f* rule of thumb (Cohen, 1988, p. 285-287) for multiple regression:**
+
+  - f <= 0.14    : Small Effect
+  - f <= 0.39   : Medium Effect
+  - f >= 0.59    : Large Effect
+  
+**Omega Squared rule of thumb:** 
+
+  - ω2 >= .01   : Small Effect
+  - ω2 >= .06   : Medium Effect
+  - ω2 >= .14   : Large Effect
+
+```{r working_on_entire_data}
+names(entire_data)
+dim(entire_data)
+```
+
+```{r keeping_categorcal_data_in_order}
+entire_data[,c("COM_HOM","INTERNET")]<-lapply(entire_data[,c("COM_HOM","INTERNET")], ordered)
+str(entire_data)
+```
+
+```{r checking_MCAR_once_again}
+misty::na.test(entire_data)
+```
+
+```{r changing_data_into_long}
+library(reshape2)
+
+long_data <- melt(entire_data, id.vars = c("COM_HOM","INTERNET","ICTHOME"))
+
+long_data <- long_data|>
+rename(test_type = variable,
+scores = value)
+
+str(long_data)
+head(long_data)
+summary(entire_data)
+
+xtabs(~COM_HOM+INTERNET, data = entire_data)
+xtabs(~COM_HOM+ICTHOME, data = entire_data)
+xtabs(~INTERNET+ICTHOME, data = entire_data)
+```
+
+
+```{r ridgelines, out.width='100%'}
+options(digits = 3)
+library(ggstatsplot)
+long_data|>
+na.omit()|>
+ggbetweenstats(y=scores, 
+x=test_type)
+
+com_home_score <- entire_data|>
+  na.omit()|>
+  select(COM_HOM, ICTHOME, LOC_INFO, UNDERSTD, EVAL_REF,SINGLE,MULTIPLE,READ_SCR)|>
+  group_by(COM_HOM)|>
+  summarize(
+    mean_ICTHOME = mean(ICTHOME),
+    sd_ICTHOME = sd(ICTHOME),
+    mean_LOC_INFO = mean(LOC_INFO),
+    sd_LOC_INFO = sd(LOC_INFO),
+    mean_UNDERSTD = mean(UNDERSTD),
+    sd_UNDERSTD = sd(UNDERSTD),
+    mean_EVAL_REF = mean(EVAL_REF),
+    sd_EVAL_REF = sd(EVAL_REF),
+    mean_SINGLE = mean(SINGLE),
+    sd_SINGLE = sd(SINGLE),
+    mean_MULTIPLE = mean(MULTIPLE),
+    sd_MULTIPLE = sd(MULTIPLE),
+    mean_READ_SCR = mean(READ_SCR),
+    sd_READ_SCR = sd(READ_SCR))|>
+  t()
+com_home_score
+
+
+internet_home_score <- entire_data|>
+  na.omit()|>
+  select(INTERNET, ICTHOME, LOC_INFO, UNDERSTD, EVAL_REF,SINGLE,MULTIPLE,READ_SCR)|>
+  group_by(INTERNET)|>
+  summarize(
+    mean_ICTHOME = mean(ICTHOME),
+    sd_ICTHOME = sd(ICTHOME),
+    mean_LOC_INFO = mean(LOC_INFO),
+    sd_LOC_INFO = sd(LOC_INFO),
+    mean_UNDERSTD = mean(UNDERSTD),
+    sd_UNDERSTD = sd(UNDERSTD),
+    mean_EVAL_REF = mean(EVAL_REF),
+    sd_EVAL_REF = sd(EVAL_REF),
+    mean_SINGLE = mean(SINGLE),
+    sd_SINGLE = sd(SINGLE),
+    mean_MULTIPLE = mean(MULTIPLE),
+    sd_MULTIPLE = sd(MULTIPLE),
+    mean_READ_SCR = mean(READ_SCR),
+    sd_READ_SCR = sd(READ_SCR))|>
+  t()
+internet_home_score
+
+
+ict_home_score <- entire_data|>
+  na.omit()|>
+  select(ICTHOME, LOC_INFO, UNDERSTD, EVAL_REF,SINGLE,MULTIPLE,READ_SCR)|>
+  group_by(ICTHOME)|>
+  summarize(
+    mean_LOC_INFO = mean(LOC_INFO),
+    sd_LOC_INFO = sd(LOC_INFO),
+    mean_UNDERSTD = mean(UNDERSTD),
+    sd_UNDERSTD = sd(UNDERSTD),
+    mean_EVAL_REF = mean(EVAL_REF),
+    sd_EVAL_REF = sd(EVAL_REF),
+    mean_SINGLE = mean(SINGLE),
+    sd_SINGLE = sd(SINGLE),
+    mean_MULTIPLE = mean(MULTIPLE),
+    sd_MULTIPLE = sd(MULTIPLE),
+    mean_READ_SCR = mean(READ_SCR),
+    sd_READ_SCR = sd(READ_SCR))|>
+  t()
+ict_home_score
+```
+
+
+## Locating Information Models
+```{r locating_information_1}
+fit_loc_info1 <- lm(LOC_INFO ~ COM_HOM + INTERNET + sqrt(ICTHOME) + COM_HOM*INTERNET, data = ICT_data)
+#summ(fit_loc_info1)
+#summary(fit_loc_info1)
+
+fit_understand1 <- lm(UNDERSTD ~ COM_HOM + INTERNET + ICTHOME + COM_HOM*INTERNET, data = ICT_data)
+#summ(fit_understand1)
+#summary(fit_understand1)
+
+fit_eval_ref1 <- lm(EVAL_REF ~ COM_HOM + INTERNET + ICTHOME + COM_HOM*INTERNET, data = ICT_data)
+#summ(fit_understand1)
+#summary(fit_eval_ref1)
+
+fit_single1 <- lm(SINGLE ~ COM_HOM + INTERNET + ICTHOME + COM_HOM*INTERNET, data = ICT_data)
+#summary(fit_single1)
+
+fit_multiple1 <- lm(MULTIPLE ~ COM_HOM + INTERNET + ICTHOME + COM_HOM*INTERNET, data = ICT_data)
+#summary(fit_multiple1)
+
+# Putting Results Together
+export_summs(fit4, fit_loc_info1, fit_understand1, fit_eval_ref1, fit_single1, fit_multiple1,
+             model.names = c("Reading Scores", "Locating Information", "Understanding Text", "Evaluating and Reflecting","single Text", "Multiple Texts"),
+             scale = TRUE,
+             robust = TRUE,
+             error_format = "[{conf.low}, {conf.high}]")
+```
+
+
+### Changing ICT home to a factor and running a regression and posthoc
+```{r factor_ICTHOME}
+fit_icthome <- lm(READ_SCR ~ factor(ICTHOME), data = ICT_data)
+summ(fit_icthome)
+car::Anova(fit_icthome, type = "III")
+TukeyHSD(aov(fit_icthome), ordered = TRUE)
+```
+
+### Assumptions Testing
+#### Assumption of Independence (Durbin Watson Test)
+```{r assumptions_independence}
+car::durbinWatsonTest(fit3)
+```
+
+#### Assumption of No Multicollinearity
+```{r assumption_multicollinearity}
+car::vif(fit3)
+mean(car::vif(fit4))
+range(car::vif(fit4))
+```
+
+
+#### Test of Normality
+```{r test_normality}
+options(scipen = 999)
+pastecs::stat.desc(ICT_data[,c("COM_HOM", "INTERNET", "ICTHOME", "LOC_INFO", "UNDERSTD", "EVAL_REF", "SINGLE", "MULTIPLE", "READ_SCR")], basic = FALSE, norm = TRUE)
+
+hist(1/(ICT_data$ICTHOME))
+hist(ICT_data$LOC_INFO)
+hist(ICT_data$UNDERSTD)
+hist(ICT_data$EVAL_REF)
+hist(ICT_data$SINGLE)
+hist(ICT_data$MULTIPLE)
+hist(ICT_data$READ_SCR)
+```
+
+#### Residual Assumptions
+```{r residual_assumption}
+plot(fit3)
+hist(rstudent(fit3))
+anova(fit2,fit3)
+```
+
+### Saving residuals with data and doing further assumptions test
+```{r saving_residuals}
+ICT1_data <- na.omit(ICT_data)
+ICT1_data$standardized_residual <- rstandard(fit3)
+ICT1_data$studentized_residual <- rstudent(fit3)
+ICT1_data$cooks_distance <- cooks.distance(fit3)
+ICT1_data$dfbeta <- dfbeta(fit3)
+ICT1_data$dffit <- dffits(fit3)
+ICT1_data$leverage <- hatvalues(fit3)
+ICT1_data$covariance_ratio <- covratio(fit3)
+
+summary(ICT1_data)
+options(scipen = 999)
+assumption_values <- ICT1_data|>
+  select(standardized_residual, studentized_residual, cooks_distance, dfbeta,dffit,leverage,covariance_ratio)|>
+  summarize(
+    mean_standardized_residual = mean(standardized_residual),
+    sd_standardized_residual = sd(standardized_residual),
+    mean_studentized_residual = mean(studentized_residual),
+    sd_studentized_residual = sd(studentized_residual),
+    mean_cooks_distance = mean(cooks_distance),
+    sd_cooks_distance = sd(cooks_distance),
+    mean_dfbeta = mean(dfbeta),
+    sd_dfbeta = sd(dfbeta),
+    mean_dffit = mean(dffit),
+    sd_dffit = sd(dffit),
+    mean_leverage = mean(leverage),
+    sd_leverage = sd(leverage),
+    mean_covariance_ratio = mean(covariance_ratio),
+    sd_covariance_ratio = sd(covariance_ratio))|>
+  t()
+assumption_values
+```
+
+
+```{r bootstrap_regression, cache=TRUE}
+library(boot)
+bootregression <- function(formula, data, indices){
+d <- data[indices, ]
+fit <- lm(formula, data = d)
+return(coef(fit))
+}
+
+boot_model3 <- boot(statistic = bootregression, formula = READ_SCR ~ COM_HOM + INTERNET + ICTHOME + COM_HOM*INTERNET*INTERNET, data = ICT_data, R = 10000)
+boot_model3
+
+boot.ci(boot_model3, type = "bca", index = 1) # Intercept
+boot.ci(boot_model3, type = "bca", index = 2) # COM_HOM
+boot.ci(boot_model3, type = "bca", index = 3) # INTERNET
+boot.ci(boot_model3, type = "bca", index = 4) # ICTHOME
+boot.ci(boot_model3, type = "bca", index = 5) # COM_HOM*INTERNET
+boot.ci(boot_model3, type = "bca", index = 6) # INTERNET*ICTHOME
+boot.ci(boot_model3, type = "bca", index = 7) # COM_HOM*INTERNET*ICTHOME
+
+# Intercept
+plot(boot_model3, index = 1)
+# COM_HOM
+plot(boot_model3, index = 2)
+# INTERNET
+plot(boot_model3, index = 3)
+# ICTHOME
+plot(boot_model3, index = 4)
+# COM_HOM*INTERNET
+plot(boot_model3, index = 5)
+# INTERNET*ICTHOME
+plot(boot_model3, index = 6)
+# COM_HOM*INTERNET*ICTHOME
+plot(boot_model3, index = 7)
+```

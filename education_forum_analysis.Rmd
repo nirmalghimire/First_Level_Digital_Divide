@@ -1,0 +1,785 @@
+---
+title: "New ICT Analysis with Plausible Values - Education Forum Manuscript"
+author: 
+- name: "Nirmal Ghimire, Ph.D."
+  url: https://www.linkedin.com/in/nirmal-ghimire-5b96a034/
+  affiliation: Watson college of Education, University of North Carolina Wilmington
+  affiliation_url: https://uncw.edu/academics/colleges/wce/about/org-charts
+  orcid_id: 0000-0002-2032-1624
+date: "`r Sys.Date()`"
+output: distill::distill_article
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      comment = NA,
+                      warning = FALSE,
+                      message = FALSE,
+                      tidy = 'styler',
+                      error = FALSE, 
+                      highlight = TRUE, 
+                     prompt = FALSE)
+library(tidyverse)
+library(ggplot2)
+library(janitor)
+library(stringr)
+library(readr)
+library(ggrepel)
+library(ggpubr)
+library(dplyr)
+library(ggstatsplot)
+library(mitools)
+library(broom)
+library(survey)
+library(scales)
+library(emmeans)
+```
+
+## Load Data (ICT_data.Rdata)
+```{r load_data}
+# Load the data
+load("ICT_data.Rdata")
+# Check the structure of the data
+str(ICT_data)
+# Check the first few rows of the data
+#head(ICT_data)
+# Check the column names
+colnames(ICT_data)
+# Check the number of rows and columns
+dim(ICT_data)
+# Changing Following Variables to Factors
+ICT_data$COM_HOM <- as.factor(ICT_data$COM_HOM)
+summary(ICT_data$COM_HOM)
+ICT_data$INTERNET <- as.factor(ICT_data$INTERNET)
+summary(ICT_data$INTERNET)
+```
+
+## Data Preparation
+```{r data_preparation}
+# Remove cases with missing values in key predictors (as you did before)
+ICT_clean <- ICT_data %>%
+  filter(!is.na(COM_HOM) & !is.na(INTERNET) & !is.na(ICTHOME)) %>%
+  mutate(
+    COM_HOM = factor(COM_HOM,
+                     levels = c("0", "1"),
+                     labels = c("No Computer", "Has Computer")),
+    
+    INTERNET = factor(INTERNET,
+                      levels = c("0", "1", "2"),
+                      labels = c("No Internet", 
+                                 "Has Internet (Not Used)", 
+                                 "Has Internet (Used)"))
+  )
+
+# Create a list of 10 datasets, one for each plausible value
+# This follows PISA technical standards
+pv_datasets <- lapply(1:10, function(i) {
+  # Create dataset with the i-th plausible value as the outcome
+  temp_data <- ICT_clean
+  temp_data$READ <- temp_data[[paste0("PV", i, "READ")]]
+  return(temp_data)
+})
+
+# Function to run weighted regression on each plausible value
+# This ensures we use the student weights (W_FSTUWT) properly
+run_weighted_model <- function(formula_string, data_list) {
+  # Run the model on each plausible value dataset
+  models <- lapply(data_list, function(df) {
+    # Create survey design object with weights
+    design <- svydesign(ids = ~1,  # no clustering in this analysis
+                        weights = ~W_FSTUWT, 
+                        data = df)
+    
+    # Fit weighted linear model
+    model <- svyglm(as.formula(formula_string), design = design)
+    return(model)
+  })
+  
+  # Extract coefficients and variance-covariance matrices
+  coefs <- lapply(models, coef)
+  vcovs <- lapply(models, vcov)
+  
+  # Combine results using Rubin's rules
+  # This properly accounts for both sampling and imputation variance
+  combined <- MIcombine(results = coefs, variances = vcovs)
+  
+  return(combined)
+}
+```
+
+## Run Models
+### Model 0: Baseline model with no predictors
+```{r run_baseline_model}
+# Baseline model with no predictors
+baseline_formula <- "READ ~ 1"
+baseline_results <- run_weighted_model(baseline_formula, pv_datasets)
+# Display results
+summary(baseline_results)
+
+# Extract Model Fit Statistics
+get_model_stats <- function(model_results, data_list, formula_string) {
+  aics <- sapply(1:10, function(i) {
+    design <- svydesign(ids = ~1, weights = ~W_FSTUWT, data = data_list[[i]])
+    model <- svyglm(as.formula(formula_string), design = design)
+    
+    # Safe AIC calculation: handle null model separately
+    if (length(attr(terms(model), "term.labels")) == 0) {
+      # Null model: AIC = 2k - 2LL, where k = 1 (intercept)
+      logL <- as.numeric(logLik(model))
+      aic_val <- 2 * 1 - 2 * logL
+    } else {
+      # Regular model
+      aic_val <- AIC(model)
+    }
+    
+    return(aic_val)
+  })
+  
+  return(mean(aics))
+}
+# display AIC
+baseline_aic <- get_model_stats(baseline_results, pv_datasets, baseline_formula)
+cat("\nBaseline Model AIC (Average across plausible values):", baseline_aic, "\n")
+```
+
+```{r r_squared_sample_null}
+# ---- Compute pseudo R² across replicates ----
+pseudo_r2 <- sapply(seq_along(pv_datasets), function(i) {
+  # set up survey design for replicate i
+  design_i <- svydesign(ids = ~1,
+                        weights = ~W_FSTUWT,
+                        data    = pv_datasets[[i]])
+  # fit null model
+  mod_i    <- svyglm(READ ~ 1, design = design_i, family = gaussian())
+  # deviance‐based pseudo R²
+  1 - (mod_i$deviance / mod_i$null.deviance)
+})
+mean_r2 <- mean(pseudo_r2)
+sd_r2   <- sd(pseudo_r2)
+
+cat("Pseudo R² (mean ± SD across replicates):",
+    sprintf("%.4f \u00B1 %.4f\n", mean_r2, sd_r2))
+
+
+# ---- Compute average sample size across replicates ----
+# here we count non‐missing READ in each dataset
+n_i          <- sapply(pv_datasets, function(df) sum(!is.na(df$READ)))
+mean_n       <- mean(n_i)
+sd_n         <- sd(n_i)
+
+cat("Sample size (mean ± SD across replicates):",
+    sprintf("%.0f ± %.0f\n", mean_n, sd_n))
+```
+
+### Model 1: Computer at home only
+```{r run_models}
+# Model 1: Computer at home only (replicating your fit1)
+model1_formula <- "READ ~ COM_HOM"
+model1_results <- run_weighted_model(model1_formula, pv_datasets)
+
+# Display results
+summary(model1_results)
+```
+
+
+```{r model1_r_squared, echo=FALSE}
+# Define the model formula for clarity
+model1_formula_str <- "READ ~ COM_HOM"
+
+# ---- Compute average pseudo R² across replicates for Model 1 ----
+pseudo_r2_model1 <- sapply(seq_along(pv_datasets), function(i) {
+  # Set up survey design for replicate i
+  design_i <- svydesign(
+    ids = ~1,                    # No clustering specified, assuming simple random sampling or PSU already accounted for if ~1
+    weights = ~W_FSTUWT,         # Your survey weight variable
+    data = pv_datasets[[i]]
+  )
+  
+  # Fit the specific model (Model 1)
+  # Ensure COM_HOM is correctly formatted (e.g., factor) in your datasets
+  mod_i <- svyglm(as.formula(model1_formula_str), design = design_i, family = gaussian()) # Assuming gaussian for READ scores
+  
+  # Deviance‐based pseudo R²
+  # This is one common way to calculate it for GLMs.
+  # R-squared = 1 - (Deviance of full model / Deviance of null model)
+  # The null model here is one with only an intercept for the same dataset and weights.
+  null_mod_i <- svyglm(READ ~ 1, design = design_i, family = gaussian())
+  
+  # Check for valid deviance values to avoid NaN if deviance is zero or null.deviance is zero
+  if (is.null(mod_i$deviance) || is.null(null_mod_i$deviance) || null_mod_i$deviance == 0) {
+    return(NA_real_) # Return NA if deviances are problematic
+  }
+  
+  r_squared_val <- 1 - (mod_i$deviance / null_mod_i$deviance)
+  return(r_squared_val)
+})
+
+mean_r2_model1 <- mean(pseudo_r2_model1, na.rm = TRUE)
+sd_r2_model1 <- sd(pseudo_r2_model1, na.rm = TRUE)
+
+cat(
+  "Model 1 Pseudo R² (mean ± SD across replicates):",
+  sprintf("%.4f \u00B1 %.4f\n", mean_r2_model1, sd_r2_model1)
+)
+
+# ---- Compute average sample size utilized across replicates for Model 1 ----
+# This counts rows with non-missing data for ALL variables in Model 1
+# (READ and COM_HOM) for each dataset. svyglm uses listwise deletion by default.
+vars_in_model1 <- all.vars(as.formula(model1_formula_str)) # Gets c("READ", "COM_HOM")
+
+n_i_model1 <- sapply(pv_datasets, function(df) {
+  sum(complete.cases(df[, vars_in_model1]))
+})
+
+mean_n_model1 <- mean(n_i_model1, na.rm = TRUE)
+sd_n_model1 <- sd(n_i_model1, na.rm = TRUE) # SD will be 0 if N is identical across datasets
+
+cat(
+  "Model 1 Sample size (mean ± SD across replicates):",
+  sprintf("%.0f \u00B1 %.0f\n", mean_n_model1, sd_n_model1)
+)
+```
+
+### Model 2: Internet at home only
+```{r run_models_internet}
+# Model 2: Computer, Internet, and their interaction (replicating your fit2)
+model2_formula <- "READ ~ COM_HOM + INTERNET + COM_HOM:INTERNET"
+model2_results <- run_weighted_model(model2_formula, pv_datasets)
+
+summary(model2_results)
+```
+
+```{r model2_r_squared, echo=FALSE}
+# Define the model formula for clarity
+model2_formula_str <- "READ ~ COM_HOM + INTERNET + COM_HOM:INTERNET"
+
+# ---- Compute average pseudo R² across replicates for Model 2 ----
+pseudo_r2_model2 <- sapply(seq_along(pv_datasets), function(i) {
+  # Set up survey design for replicate i
+  design_i <- svydesign(
+    ids = ~1,
+    weights = ~W_FSTUWT, # Your survey weight variable
+    data = pv_datasets[[i]]
+  )
+  
+  # Fit the specific model (Model 2)
+  # Ensure COM_HOM and INTERNET are correctly formatted (e.g., factors)
+  mod_i <- svyglm(as.formula(model2_formula_str), design = design_i, family = gaussian())
+  
+  # Fit the null model (intercept-only) for R-squared calculation
+  null_mod_i <- svyglm(READ ~ 1, design = design_i, family = gaussian())
+  
+  # Check for valid deviance values
+  if (is.null(mod_i$deviance) || is.null(null_mod_i$deviance) || null_mod_i$deviance == 0) {
+    return(NA_real_)
+  }
+  
+  r_squared_val <- 1 - (mod_i$deviance / null_mod_i$deviance)
+  return(r_squared_val)
+})
+
+mean_r2_model2 <- mean(pseudo_r2_model2, na.rm = TRUE)
+sd_r2_model2 <- sd(pseudo_r2_model2, na.rm = TRUE)
+
+cat(
+  "Model 2 Pseudo R² (mean ± SD across replicates):",
+  sprintf("%.4f \u00B1 %.4f\n", mean_r2_model2, sd_r2_model2)
+)
+
+# ---- Compute average sample size utilized across replicates for Model 2 ----
+# This counts rows with non-missing data for ALL variables in Model 2
+# (READ, COM_HOM, and INTERNET) for each dataset.
+vars_in_model2 <- all.vars(as.formula(model2_formula_str)) # Gets c("READ", "COM_HOM", "INTERNET")
+
+n_i_model2 <- sapply(pv_datasets, function(df) {
+  sum(complete.cases(df[, vars_in_model2]))
+})
+
+mean_n_model2 <- mean(n_i_model2, na.rm = TRUE)
+sd_n_model2 <- sd(n_i_model2, na.rm = TRUE)
+
+cat(
+  "Model 2 Sample size (mean ± SD across replicates):",
+  sprintf("%.0f \u00B1 %.0f\n", mean_n_model2, sd_n_model2)
+)
+```
+
+
+### Model 3: Full model with ICTHOME and all interactions (replicating fit3)
+```{r run_models_ict}
+# Model 3: Full model with ICTHOME and all interactions (replicating your fit3)
+model3_formula <- "READ ~ COM_HOM + INTERNET + ICTHOME + 
+                   COM_HOM:INTERNET + COM_HOM:ICTHOME + 
+                   INTERNET:ICTHOME + COM_HOM:INTERNET:ICTHOME"
+model3_results <- run_weighted_model(model3_formula, pv_datasets)
+
+summary(model3_results)
+```
+
+```{r model3_r_squared, echo=FALSE}
+# Define the model formula for clarity
+model3_formula_str <- "READ ~ COM_HOM + INTERNET + ICTHOME + COM_HOM:INTERNET + COM_HOM:ICTHOME + INTERNET:ICTHOME + COM_HOM:INTERNET:ICTHOME"
+
+# ---- Compute average pseudo R² across replicates for Model 3 ----
+pseudo_r2_model3 <- sapply(seq_along(pv_datasets), function(i) {
+  # Set up survey design for replicate i
+  design_i <- svydesign(
+    ids = ~1,
+    weights = ~W_FSTUWT, # Your survey weight variable
+    data = pv_datasets[[i]]
+  )
+  
+  # Fit the specific model (Model 3)
+  # Ensure COM_HOM, INTERNET are factors and ICTHOME is numeric as intended
+  mod_i <- svyglm(as.formula(model3_formula_str), design = design_i, family = gaussian())
+  
+  # Fit the null model (intercept-only) for R-squared calculation
+  null_mod_i <- svyglm(READ ~ 1, design = design_i, family = gaussian())
+  
+  # Check for valid deviance values
+  if (is.null(mod_i$deviance) || is.null(null_mod_i$deviance) || null_mod_i$deviance == 0) {
+    return(NA_real_)
+  }
+  
+  r_squared_val <- 1 - (mod_i$deviance / null_mod_i$deviance)
+  return(r_squared_val)
+})
+
+mean_r2_model3 <- mean(pseudo_r2_model3, na.rm = TRUE)
+sd_r2_model3 <- sd(pseudo_r2_model3, na.rm = TRUE)
+
+cat(
+  "Model 3 Pseudo R² (mean ± SD across replicates):",
+  sprintf("%.4f \u00B1 %.4f\n", mean_r2_model3, sd_r2_model3)
+)
+
+# ---- Compute average sample size utilized across replicates for Model 3 ----
+# This counts rows with non-missing data for ALL variables in Model 3
+# (READ, COM_HOM, INTERNET, and ICTHOME) for each dataset.
+vars_in_model3 <- all.vars(as.formula(model3_formula_str)) # Gets c("READ", "COM_HOM", "INTERNET", "ICTHOME")
+
+n_i_model3 <- sapply(pv_datasets, function(df) {
+  sum(complete.cases(df[, vars_in_model3]))
+})
+
+mean_n_model3 <- mean(n_i_model3, na.rm = TRUE)
+sd_n_model3 <- sd(n_i_model3, na.rm = TRUE)
+
+cat(
+  "Model 3 Sample size (mean ± SD across replicates):",
+  sprintf("%.0f \u00B1 %.0f\n", mean_n_model3, sd_n_model3)
+)
+```
+
+
+### Model 4: Non-linear relationship with ICTHOME, adding a squared term
+```{r run_models_ict_squared}
+# This addresses Reviewer A's comment about proper specification
+model4_formula <- "READ ~ COM_HOM + INTERNET + ICTHOME + I(ICTHOME^2) + 
+                   COM_HOM:INTERNET"
+model4_results <- run_weighted_model(model4_formula, pv_datasets)
+
+summary(model4_results)
+```
+
+```{r model4_r_squared, echo=FALSE}
+# Define the model formula for clarity
+# Note: I(ICTHOME^2) is the correct way to specify the squared term within the formula
+model4_formula_str <- "READ ~ COM_HOM + INTERNET + ICTHOME + I(ICTHOME^2) + COM_HOM:INTERNET"
+
+# ---- Compute average pseudo R² across replicates for Model 4 ----
+pseudo_r2_model4 <- sapply(seq_along(pv_datasets), function(i) {
+  # Set up survey design for replicate i
+  design_i <- svydesign(
+    ids = ~1,
+    weights = ~W_FSTUWT, # Your survey weight variable
+    data = pv_datasets[[i]]
+  )
+  
+  # Fit the specific model (Model 4)
+  mod_i <- svyglm(as.formula(model4_formula_str), design = design_i, family = gaussian())
+  
+  # Fit the null model (intercept-only) for R-squared calculation
+  null_mod_i <- svyglm(READ ~ 1, design = design_i, family = gaussian())
+  
+  # Check for valid deviance values
+  if (is.null(mod_i$deviance) || is.null(null_mod_i$deviance) || null_mod_i$deviance == 0) {
+    return(NA_real_)
+  }
+  
+  r_squared_val <- 1 - (mod_i$deviance / null_mod_i$deviance)
+  return(r_squared_val)
+})
+
+mean_r2_model4 <- mean(pseudo_r2_model4, na.rm = TRUE)
+sd_r2_model4 <- sd(pseudo_r2_model4, na.rm = TRUE)
+
+cat(
+  "Model 4 Pseudo R² (mean ± SD across replicates):",
+  sprintf("%.4f \u00B1 %.4f\n", mean_r2_model4, sd_r2_model4)
+)
+
+# ---- Compute average sample size utilized across replicates for Model 4 ----
+# This counts rows with non-missing data for ALL variables in Model 4.
+# all.vars will correctly extract "ICTHOME" from "I(ICTHOME^2)"
+vars_in_model4 <- all.vars(as.formula(model4_formula_str)) 
+# Resulting vars_in_model4 should be c("READ", "COM_HOM", "INTERNET", "ICTHOME")
+
+n_i_model4 <- sapply(pv_datasets, function(df) {
+  sum(complete.cases(df[, vars_in_model4]))
+})
+
+mean_n_model4 <- mean(n_i_model4, na.rm = TRUE)
+sd_n_model4 <- sd(n_i_model4, na.rm = TRUE)
+
+cat(
+  "Model 4 Sample size (mean ± SD across replicates):",
+  sprintf("%.0f \u00B1 %.0f\n", mean_n_model4, sd_n_model4)
+)
+```
+
+### Model 5: ICTHOME Curve Moderated by Both Computer Ownership and Internet Status
+```{r run_models_ict_curve}
+# --- Define Enhanced Model 5b ---
+model5b_formula_str <- "READ ~ COM_HOM + INTERNET + ICTHOME + I(ICTHOME^2) + COM_HOM:INTERNET + COM_HOM:ICTHOME + COM_HOM:I(ICTHOME^2) + INTERNET:ICTHOME + INTERNET:I(ICTHOME^2)"
+model5b_results <- run_weighted_model(model5b_formula_str, pv_datasets)
+summary(model5b_results)
+```
+
+```{r model5b_r_squared, echo=FALSE}
+# ---- Compute average pseudo R² across replicates for Model 5b ----
+pseudo_r2_model5b <- sapply(seq_along(pv_datasets), function(i) {
+  # Set up survey design for replicate i
+  design_i <- svydesign(
+    ids = ~1,
+    weights = ~W_FSTUWT, # Your survey weight variable
+    data = pv_datasets[[i]]
+  )
+  
+  # Fit the specific model (Model 5b)
+  mod_i <- svyglm(as.formula(model5b_formula_str), design = design_i, family = gaussian())
+  
+  # Fit the null model (intercept-only) for R-squared calculation
+  null_mod_i <- svyglm(READ ~ 1, design = design_i, family = gaussian())
+  
+  # Check for valid deviance values
+  if (is.null(mod_i$deviance) || is.null(null_mod_i$deviance) || null_mod_i$deviance == 0 || is.na(mod_i$deviance) || is.na(null_mod_i$deviance)) {
+    return(NA_real_)
+  }
+  
+  r_squared_val <- 1 - (mod_i$deviance / null_mod_i$deviance)
+  return(r_squared_val)
+})
+
+mean_r2_model5b <- mean(pseudo_r2_model5b, na.rm = TRUE)
+sd_r2_model5b <- sd(pseudo_r2_model5b, na.rm = TRUE)
+
+cat(
+  "Enhanced Model 5b Pseudo R² (mean ± SD across replicates):",
+  sprintf("%.4f \u00B1 %.4f\n", mean_r2_model5b, sd_r2_model5b)
+)
+
+# ---- Compute average sample size utilized across replicates for Model 5b ----
+vars_in_model5b <- all.vars(as.formula(model5b_formula_str)) 
+# Expected: c("READ", "COM_HOM", "INTERNET", "ICTHOME")
+
+n_i_model5b <- sapply(pv_datasets, function(df) {
+  sum(complete.cases(df[, intersect(vars_in_model5b, names(df))]))
+})
+
+mean_n_model5b <- mean(n_i_model5b, na.rm = TRUE)
+sd_n_model5b <- sd(n_i_model5b, na.rm = TRUE)
+
+cat(
+  "Enhanced Model 5b Sample size (mean ± SD across replicates):",
+  sprintf("%.0f \u00B1 %.0f\n", mean_n_model5b, sd_n_model5b)
+)
+```
+
+#### Model Diagnostics and Comparisons
+```{r model_diagnostics}
+
+# Formula Strings
+model1_formula <- "READ ~ COM_HOM"
+model2_formula <- "READ ~ COM_HOM + INTERNET + COM_HOM:INTERNET"
+model3_formula <- "READ ~ COM_HOM + INTERNET + ICTHOME + COM_HOM:INTERNET + COM_HOM:ICTHOME + INTERNET:ICTHOME + COM_HOM:INTERNET:ICTHOME" 
+model4_formula <- "READ ~ COM_HOM + INTERNET + ICTHOME + I(ICTHOME^2) + COM_HOM:INTERNET" 
+model5b_formula_str <- "READ ~ COM_HOM + INTERNET + ICTHOME + I(ICTHOME^2) + COM_HOM:INTERNET + COM_HOM:ICTHOME + COM_HOM:I(ICTHOME^2) + INTERNET:ICTHOME + INTERNET:I(ICTHOME^2)"
+
+# Function to extract model fit statistics
+get_model_stats <- function(data_list, formula_string) {
+  aics <- sapply(seq_along(data_list), function(i) {
+    design <- svydesign(ids = ~1, weights = ~W_FSTUWT, data = data_list[[i]])
+    model <- svyglm(as.formula(formula_string), design = design, family = gaussian()) 
+    AIC(model)
+  })
+  return(mean(aics))
+}
+
+# Create the data frame for model comparison
+model_comparison <- data.frame(
+  Model = c("Model 1: Computer only", 
+            "Model 2: Computer + Internet + Interaction",  
+            "Model 3: Full ICT Interactions", 
+            "Model 4: Quadratic ICTHOME",
+            "Model 5: ICTHOME Curve Moderated by COM_HOM & INTERNET"),
+  Formula_String = c(model1_formula, # Use the formula string variables directly
+                     model2_formula, 
+                     model3_formula, 
+                     model4_formula, 
+                     model5b_formula_str),
+  AIC = NA # Initialize AIC column
+)
+
+# Calculate AIC for each model using the CORRECTED function calls
+model_comparison$AIC[1] <- get_model_stats(pv_datasets, model_comparison$Formula_String[1])
+model_comparison$AIC[2] <- get_model_stats(pv_datasets, model_comparison$Formula_String[2])
+model_comparison$AIC[3] <- get_model_stats(pv_datasets, model_comparison$Formula_String[3])
+model_comparison$AIC[4] <- get_model_stats(pv_datasets, model_comparison$Formula_String[4])
+model_comparison$AIC[5] <- get_model_stats(pv_datasets, model_comparison$Formula_String[5])
+
+# View the comparison table
+print(model_comparison)
+```
+
+## Visualization and Analysis
+```{r plausible_value_dataset, ec=FALSE}
+# Check data structure
+str(ICT_data)
+names(ICT_data)
+
+# Check missing values
+colSums(is.na(ICT_data))
+
+# Create clean dataset
+ICT_clean <- ICT_data %>%
+  filter(!is.na(COM_HOM) & !is.na(INTERNET) & !is.na(ICTHOME))
+
+dim(ICT_clean)
+
+# Create plausible value datasets
+pv_datasets <- lapply(1:10, function(i) {
+  temp_data <- ICT_clean
+  temp_data$READ <- temp_data[[paste0("PV", i, "READ")]]
+  return(temp_data)
+})
+
+# Function to calculate weighted means with plausible values
+calculate_weighted_stats <- function(group_var) {
+  results_list <- lapply(1:10, function(i) {
+    df <- pv_datasets[[i]]
+    design <- svydesign(ids = ~1, weights = ~W_FSTUWT, data = df)
+    means <- svyby(~READ, as.formula(paste0("~", group_var)), 
+                   design, svymean, na.rm = TRUE)
+    return(means)
+  })
+  
+  groups <- results_list[[1]][[group_var]]
+  combined_results <- data.frame()
+  
+  for (g in 1:length(groups)) {
+  group_means <- sapply(results_list, function(x) x$READ[g])
+  
+  group_ses <- sapply(results_list, function(x) {
+    se_vals <- SE(x)
+    if (is.matrix(se_vals)) {
+      se_vals[g, "READ"]
+    } else {
+      se_vals[g]
+    }
+  })
+  
+  mean_est <- mean(group_means)
+  within_var <- mean(group_ses^2)
+  between_var <- var(group_means) * (1 + 1/10)
+  total_var <- within_var + between_var
+  total_se <- sqrt(total_var)
+  
+  combined_results <- rbind(combined_results, data.frame(
+    group = groups[g],
+    mean = mean_est,
+    se = total_se,
+    ci_lower = mean_est - 1.96 * total_se,
+    ci_upper = mean_est + 1.96 * total_se
+  ))
+}
+  
+  return(combined_results)
+}
+
+# Calculate statistics
+computer_stats <- calculate_weighted_stats("COM_HOM")
+internet_stats <- calculate_weighted_stats("INTERNET") 
+icthome_stats <- calculate_weighted_stats("ICTHOME")
+```
+
+```{r apa_style_function, eco=FALSE}
+# APA 7 theme function
+theme_apa <- function() {
+  theme_minimal() +
+  theme(
+    # Text elements
+    text = element_text(size = 12),
+    plot.title = element_text(size = 12, face = "bold", hjust = 0, margin = margin(b = 12)),
+    axis.title = element_text(size = 12, face = "plain"),
+    axis.title.x = element_text(margin = margin(t = 8)),
+    axis.title.y = element_text(margin = margin(r = 8)),
+    axis.text = element_text(size = 10, color = "black"),
+    
+    # Legend
+    legend.title = element_text(size = 11, face = "plain"),
+    legend.text = element_text(size = 10),
+    legend.position = "top",
+    legend.justification = "left",
+    legend.box.margin = margin(0, 0, 0, 0),
+    
+    # Panel elements
+    panel.grid.major = element_line(color = "grey80", size = 0.25),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, size = 0.5),
+    
+    # Spacing
+    plot.margin = unit(c(1, 1, 1, 1), "cm")
+  )
+}
+
+# Check if objects exist, if not create them
+if (!exists("computer_stats")) {
+  computer_stats <- calculate_weighted_stats("COM_HOM")
+}
+if (!exists("internet_stats")) {
+  internet_stats <- calculate_weighted_stats("INTERNET")
+}
+if (!exists("icthome_stats")) {
+  icthome_stats <- calculate_weighted_stats("ICTHOME")
+}
+
+# Ensure subscales data exists
+if (!exists("computer_subscales_df")) {
+  # Subscale analysis function
+  calculate_subscale_stats <- function(outcome_var, group_var, data) {
+    design <- svydesign(ids = ~1, weights = ~W_FSTUWT, data = data)
+    
+    formula_str <- paste0("~", outcome_var)
+    group_formula <- as.formula(paste0("~", group_var))
+    
+    means <- svyby(as.formula(formula_str), group_formula, 
+                   design, svymean, na.rm = TRUE)
+    
+    se_vals <- SE(means)
+    
+    result <- data.frame(
+      group = means[[group_var]],
+      mean = means[[outcome_var]],
+      se = if(is.matrix(se_vals)) se_vals[, outcome_var] else se_vals
+    )
+    result$ci_lower <- result$mean - 1.96 * result$se
+    result$ci_upper <- result$mean + 1.96 * result$se
+    result$outcome <- outcome_var
+    
+    return(result)
+  }
+  
+  # Calculate for all subscales
+  subscales <- c("LOC_INFO", "UNDERSTD", "EVAL_REF", "SINGLE", "MULTIPLE", "READ_SCR")
+  
+  computer_subscales <- lapply(subscales, function(x) {
+    calculate_subscale_stats(x, "COM_HOM", ICT_clean)
+  })
+  computer_subscales_df <- do.call(rbind, computer_subscales)
+}
+```
+
+## Plotting the Data
+```{r plot_data, echo = FALSE}
+# Figure 1: Computer Access (APA style)
+plot1_apa <- computer_stats %>%
+  mutate(COM_HOM = factor(group, labels = c("No Computer", "Has Computer"))) %>%
+  ggplot(aes(x = COM_HOM, y = mean)) +
+  geom_bar(stat = "identity", width = 0.5, fill = "gray40") +
+  geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper), 
+                width = 0.15, size = 0.5) +
+  geom_text(aes(label = sprintf("%.1f", mean)), 
+            vjust = -1.5, size = 3.5) +
+  scale_y_continuous(limits = c(0, 600), 
+                     breaks = seq(0, 600, 100),
+                     expand = c(0, 0)) +
+  labs(x = "Computer Access",
+       y = "Mean Reading Score") +
+  theme_apa()
+
+# Figure 2: Internet Access (APA style)
+plot2_apa <- internet_stats %>%
+  mutate(INTERNET = factor(group, 
+                          labels = c("No Internet", 
+                                   "Has Internet (Not Used)", 
+                                   "Has Internet (Used)"))) %>%
+  ggplot(aes(x = INTERNET, y = mean)) +
+  geom_line(aes(group = 1), size = 0.5, color = "black") +
+  geom_point(size = 3, color = "black", shape = 19) +
+  geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper), 
+                width = 0.1, size = 0.5) +
+  scale_y_continuous(limits = c(350, 550), 
+                     breaks = seq(350, 550, 50),
+                     expand = c(0, 0)) +
+  labs(x = "Internet Access Status",
+       y = "Mean Reading Score") +
+  theme_apa()
+
+# Figure 3: ICT Devices (APA style)
+plot3_apa <- icthome_stats %>%
+  ggplot(aes(x = group, y = mean)) +
+  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), 
+              alpha = 0.2, fill = "gray") +
+  geom_line(size = 0.5, color = "black") +
+  geom_point(size = 2, color = "black", shape = 19) +
+  scale_x_continuous(breaks = 1:12,
+                     expand = c(0.02, 0)) +
+  scale_y_continuous(limits = c(300, 550), 
+                     breaks = seq(300, 550, 50),
+                     expand = c(0, 0)) +
+  labs(x = "Number of ICT Devices",
+       y = "Mean Reading Score") +
+  theme_apa()
+
+# Figure 4: Subscales (APA style)
+plot4_apa <- computer_subscales_df %>%
+  mutate(
+    COM_HOM = factor(group, labels = c("No Computer", "Has Computer")),
+    outcome_label = factor(outcome,
+                         levels = subscales,
+                         labels = c("Locating\nInformation", "Understanding\nText", 
+                                  "Evaluating &\nReflecting", "Single\nText", 
+                                  "Multiple\nTexts", "Overall\nReading"))
+  ) %>%
+  ggplot(aes(x = outcome_label, y = mean, fill = COM_HOM)) +
+  geom_bar(stat = "identity", 
+           position = position_dodge(width = 0.8), 
+           width = 0.7) +
+  geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper), 
+                position = position_dodge(width = 0.8), 
+                width = 0.25,
+                size = 0.5) +
+  scale_fill_manual(values = c("gray70", "gray30"), 
+                    name = "") +
+  scale_y_continuous(limits = c(0, 600), 
+                     breaks = seq(0, 600, 100),
+                     expand = c(0, 0)) +
+  labs(x = "Reading Assessment Component",
+       y = "Mean Score") +
+  theme_apa() +
+  theme(axis.text.x = element_text(size = 9))
+
+# Display plots
+print(plot1_apa)
+print(plot2_apa)
+print(plot3_apa)
+print(plot4_apa)
+
+# Save with APA formatting
+#ggsave("Figure_1.png", plot = plot1_apa, width = 6,height = 4.5, dpi = 600, bg = "white")
+# ggsave("Figure_2.png", plot = plot2_apa, width = 6, height = 4.5, dpi = 600, bg = "white")
+# ggsave("Figure_3.png", plot = plot3_apa, width = 7, height = 4.5, dpi = 600, bg = "white")
+# ggsave("Figure_4.png", plot = plot4_apa, width = 8, height = 5, dpi = 600, bg = "white")       
+```
+
